@@ -1,0 +1,13 @@
+[package]
+name = "distributed_kv_store"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+members = [
+    "kv_store",
+    "."
+]
+
+[dependencies]
+kv_store = { path = "kv_store"}
