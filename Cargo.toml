@@ -11,3 +11,7 @@ members = [
 
 [dependencies]
 kv_store = { path = "kv_store"}
+tokio = { version = "1", features = ["full"] }
+hyper = { version = "0.14", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

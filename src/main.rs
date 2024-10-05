@@ -1,56 +1,84 @@
+use hyper::{Body, Request, Response, Server};
+use hyper::service::{make_service_fn, service_fn};
+use serde_json::value;
+use std::convert::Infallible;
+use tokio::sync::Mutex;
+use std::sync::Arc;
 use  kv_store::KVStore;
-use  std::io;
-fn main() {
-    let mut  kv_store = KVStore::new();
 
-    loop {
-        println!("Enter a command (SET, GET, DELETE o EXIT):");
-        let mut input = String::new();
-        io::stdin().read_line(&mut input).expect("Failed to read line");
+#[tokio::main]
+async fn main() {
+    //Initialize an in-memory KVStore and wrap it in an Arc<Mutex<>>
+    let store = Arc::new(Mutex::new(KVStore::new()));
 
-        let input_parts: Vec<&str> = input.trim().split_whitespace().collect();
+    // Define the address and port to listen on
+    let addr = ([127, 0, 0, 1], 3000).into();
 
-        if input_parts.is_empty() {
-            continue;
+    let make_svc = make_service_fn(move |_conn| {
+        let store = store.clone();
+
+        // Create a service that handles incoming requests
+        async move {
+            Ok::<_, Infallible>(service_fn(move |req| {
+                let store = store.clone();
+                handle_request(req, store)
+            }))
         }
+    });
 
-        match input_parts[0].to_uppercase().as_str() {
-            "SET" => {
-                if input_parts.len() == 3 {
-                    kv_store.set(input_parts[1].to_string(), input_parts[2].to_string());
-                    println!("Key-value pair set.");
-                } else {
-                    println!("Usage: SET key value");
-                }
-            },
-            "GET" => { 
-                if input_parts.len() == 2 {
-                    match kv_store.get(input_parts[1]) {
-                        Some(value) => println!("Value: {}", value),
-                        None => println!("Key not found"),
-                    }
-                } else {
-                    println!("Usage: SET key value")
-                }
+    let server = Server::bind(&addr).serve(make_svc);
+    println!("Listening on http://{}", addr);
 
-            },
-            "DELETE" => {
-                if input_parts.len() == 2 {
-                    match kv_store.delete(input_parts[1]) {
-                        Some(_) => println!("Key deleted"),
-                        None => println!("Key not found"),
-                    }
-                } else {
-                    println!("Usage: DELETE key")
-                }
-            },
-            "EXIT" => {
-                println!("Exiting...");
-                break;
-            },
-            _ => {  
-                println!("Unknown command. Please use SET, GET, DELETE, OR EXIT.");
+    //Run the server and catch any errors
+    if let Err(e) = server.await {
+        eprintln!("Server error: {}", e);
+    }
+}
+
+async fn handle_request(
+    req: Request<Body>,
+    store: Arc<Mutex<KVStore>>
+) -> Result<Response<Body>, Infallible> {
+    match (req.method(), req.uri().path()) {
+        
+        // Handle GET request ( e.g., GET /key/:key)
+        (&hyper::Method::GET, path) => {
+            let key = path.trim_start_matches("/key/");
+            let mut store = store.lock().await;
+            if let Some(value) = store.get(key) {
+                Ok(Response::new(Body::from(value.clone())))
+            } else {
+                Ok(Response::builder().status(404).body(Body::from("Key not found")).unwrap())
             }
         }
+
+        // Handle POST request (e.g., POST /key to set a value)
+        (&hyper::Method::POST, "/key") => {
+            let whole_body = hyper::body::to_bytes(req.into_body()).await.unwrap();
+            let body_str = String::from_utf8(whole_body.to_vec()).unwrap();
+            let mut parts: Vec<&str> = body_str.split('=').collect();
+            if parts.len() == 2 {
+                let key = parts.remove(0).to_string();
+                let value = parts.remove(0).to_string();
+                let mut store = store.lock().await;
+                store.set(key.clone(), value.clone());
+                Ok(Response::new(Body::from(format!("Key {} set sucessfully", key))))
+            } else {
+                Ok(Response::builder().status(400).body(Body::from("Invalid request")).unwrap())
+            }   
+        }
+
+        // Handle DELETE request (e.g., DELETE /key/:key)
+        (&hyper::Method::DELETE, path) => {
+            let key = path.trim_start_matches("/key/");
+            let mut store = store.lock().await;
+            if let Some(_) = store.delete(key) {
+                Ok(Response::new(Body::from("Key deleted sucessfully")))
+            } else {
+                Ok(Response::builder().status(404).body(Body::from("Key not found")).unwrap())
+            }
+        }
+
+        _ => Ok(Response::builder().status(404).body(Body::from("Not found")).unwrap()),
     }
 }
